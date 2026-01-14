@@ -880,13 +880,13 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
         )}
 
         <div className="grid gap-4">
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
-          <Card>
-            <CardHeader>
-              <CardTitle>Comparison inputs</CardTitle>
-              <CardDescription>Pick portfolio scope and inflation series.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
+          <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Comparison inputs</CardTitle>
+                <CardDescription>Pick portfolio scope and inflation series.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="account-select">Portfolio scope</Label>
                 <Select value={accountId} onValueChange={setAccountId}>
@@ -1042,7 +1042,7 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
             </CardContent>
           </Card>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 grid-cols-1 md:grid-cols-2">
             <Card>
               <CardHeader>
                 <CardTitle>Interpretation</CardTitle>
@@ -1061,59 +1061,59 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
             </Card>
 
             <Card>
-              <CardHeader>
+                <CardHeader>
                 <CardTitle>Key metrics</CardTitle>
                 <CardDescription>Nominal vs. inflation-adjusted performance.</CardDescription>
-              </CardHeader>
-              <CardContent>
+                </CardHeader>
+                <CardContent>
                 {dataLoading || accountsLoading ? (
-                  <div className="grid gap-4 md:grid-cols-3">
-                    <Skeleton className="h-20" />
-                    <Skeleton className="h-20" />
-                    <Skeleton className="h-20" />
+                  <div className="grid gap-4">
+                  <Skeleton className="h-20" />
+                  <Skeleton className="h-20" />
+                  <Skeleton className="h-20" />
                   </div>
                 ) : stats ? (
-                  <div className="grid gap-4 md:grid-cols-3">
-                    <div className="space-y-1">
-                      <p className="text-sm text-muted-foreground">Latest nominal value</p>
-                      <AmountDisplay
-                        value={stats.latestNominal}
-                        currency={displayCurrency}
-                        className="text-xl font-semibold"
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        {percentFormatter.format(stats.nominalChange / 100)} since start
-                      </p>
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-sm text-muted-foreground">Inflation-adjusted value</p>
-                      <AmountDisplay
-                        value={stats.latestReal}
-                        currency={displayCurrency}
-                        className="text-xl font-semibold"
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        {percentFormatter.format(stats.realChange / 100)} since start
-                      </p>
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-sm text-muted-foreground">Inflation change</p>
-                      <p className="text-xl font-semibold">
-                        {percentFormatter.format(stats.inflationChange / 100)}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Index at {indexFormatter.format(stats.latestInflationIndex)}
-                      </p>
-                    </div>
+                  <div className="grid gap-4">
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Latest nominal value</p>
+                    <AmountDisplay
+                    value={stats.latestNominal}
+                    currency={displayCurrency}
+                    className="text-xl font-semibold"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                    {percentFormatter.format(stats.nominalChange / 100)} since start
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Inflation-adjusted value</p>
+                    <AmountDisplay
+                    value={stats.latestReal}
+                    currency={displayCurrency}
+                    className="text-xl font-semibold"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                    {percentFormatter.format(stats.realChange / 100)} since start
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Inflation change</p>
+                    <p className="text-xl font-semibold">
+                    {percentFormatter.format(stats.inflationChange / 100)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                    Index at {indexFormatter.format(stats.latestInflationIndex)}
+                    </p>
+                  </div>
                   </div>
                 ) : (
                   <EmptyPlaceholder
-                    icon={<Icons.InfoCircle className="h-5 w-5" />}
-                    title="No data yet"
-                    description="Choose a country and metric to load comparison data."
+                  icon={<Icons.InfoCircle className="h-5 w-5" />}
+                  title="No data yet"
+                  description="Choose a country and metric to load comparison data."
                   />
                 )}
-              </CardContent>
+                </CardContent>
             </Card>
           </div>
         </div>
