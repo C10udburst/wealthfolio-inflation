@@ -33,7 +33,6 @@ import {
 import { AmountDisplay } from '@wealthfolio/ui';
 import {
   Area,
-  Bar,
   CartesianGrid,
   ChartContainer,
   ChartLegend,
@@ -61,7 +60,7 @@ import {
   type InflationValueType,
 } from '../lib/inflation';
 
-type ChartType = 'line' | 'area' | 'bar';
+type PlotType = 'comparison' | 'loss';
 type RangeOption = '1Y' | '3Y' | '5Y' | '10Y' | 'ALL';
 
 const RANGE_OPTIONS: { value: RangeOption; label: string }[] = [
@@ -101,11 +100,16 @@ const CHART_CONFIG = {
     label: 'Inflation-adjusted value',
     color: '#16a34a',
   },
+  outperformance: {
+    label: 'Excess return',
+    color: '#f97316',
+  },
 };
 
 type SeriesPoint = {
   date: string;
-  value: number;
+  totalValue: number;
+  netContribution: number;
 };
 
 type ComparisonPoint = {
@@ -113,6 +117,7 @@ type ComparisonPoint = {
   nominal: number;
   real: number;
   inflationIndex: number;
+  netContribution: number;
 };
 
 const toMonthKey = (value: string) => {
@@ -209,15 +214,21 @@ const toDayKey = (value: string) => {
   return parsed.toISOString().slice(0, 10);
 };
 
-const buildDailyPortfolioSeries = (valuations: AccountValuation[]): SeriesPoint[] => {
+const buildDailyPortfolioSeries = (
+  valuations: AccountValuation[],
+): SeriesPoint[] => {
   if (valuations.length === 0) {
     return [];
   }
 
-  const dailyValues = new Map<string, number>();
+  const dailyValues = new Map<string, SeriesPoint>();
   for (const valuation of valuations) {
     const dayKey = toDayKey(String(valuation.valuationDate));
-    dailyValues.set(dayKey, valuation.totalValue);
+    dailyValues.set(dayKey, {
+      date: dayKey,
+      totalValue: valuation.totalValue,
+      netContribution: valuation.netContribution ?? 0,
+    });
   }
 
   const sortedKeys = Array.from(dailyValues.keys()).sort((a, b) => a.localeCompare(b));
@@ -228,21 +239,35 @@ const buildDailyPortfolioSeries = (valuations: AccountValuation[]): SeriesPoint[
   const startDate = parseIsoDate(sortedKeys[0]);
   const endDate = parseIsoDate(sortedKeys[sortedKeys.length - 1]);
   if (!startDate || !endDate) {
-    return sortedKeys.map((date) => ({ date, value: dailyValues.get(date) ?? 0 }));
+    return sortedKeys.map(
+      (date) =>
+        dailyValues.get(date) ?? {
+          date,
+          totalValue: 0,
+          netContribution: 0,
+        },
+    );
   }
 
   const series: SeriesPoint[] = [];
   let current = new Date(startDate.getTime());
   let lastValue: number | null = null;
+  let lastContribution: number | null = null;
   const dayMs = 24 * 60 * 60 * 1000;
 
   while (current.getTime() <= endDate.getTime()) {
     const key = toIsoDate(current);
     if (dailyValues.has(key)) {
-      lastValue = dailyValues.get(key) ?? null;
+      const point = dailyValues.get(key);
+      lastValue = point?.totalValue ?? null;
+      lastContribution = point?.netContribution ?? 0;
     }
     if (lastValue !== null && lastValue !== undefined) {
-      series.push({ date: key, value: lastValue });
+      series.push({
+        date: key,
+        totalValue: lastValue,
+        netContribution: lastContribution ?? 0,
+      });
     }
     current = new Date(current.getTime() + dayMs);
   }
@@ -250,11 +275,17 @@ const buildDailyPortfolioSeries = (valuations: AccountValuation[]): SeriesPoint[
   return series;
 };
 
-const buildMonthlyPortfolioSeries = (dailySeries: SeriesPoint[]): SeriesPoint[] => {
+const buildMonthlyPortfolioSeries = (
+  dailySeries: SeriesPoint[],
+): SeriesPoint[] => {
   const byMonth = new Map<string, SeriesPoint>();
   for (const point of dailySeries) {
     const monthKey = toMonthKey(point.date);
-    byMonth.set(monthKey, { date: monthKey, value: point.value });
+    byMonth.set(monthKey, {
+      date: monthKey,
+      totalValue: point.totalValue,
+      netContribution: point.netContribution,
+    });
   }
 
   return Array.from(byMonth.values()).sort((a, b) => a.date.localeCompare(b.date));
@@ -356,7 +387,7 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
   const [customMetricId, setCustomMetricId] = useState('');
   const [customMetricType, setCustomMetricType] =
     useState<InflationValueType>('percent');
-  const [chartType, setChartType] = useState<ChartType>('line');
+  const [plotType, setPlotType] = useState<PlotType>('comparison');
   const [resolution, setResolution] = useState<'monthly' | 'daily'>('monthly');
   const [range, setRange] = useState<RangeOption>('5Y');
   const [imfFrequency, setImfFrequency] = useState<InflationFrequency>('M');
@@ -720,7 +751,9 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
     const inflationMap = new Map(
       resolvedInflationIndex.map((point) => [point.date, point.value]),
     );
-    const sortedPortfolio = [...portfolioSeries].sort((a, b) => a.date.localeCompare(b.date));
+    const sortedPortfolio = [...portfolioSeries].sort((a, b) =>
+      a.date.localeCompare(b.date),
+    );
     let baseInflation: number | null = null;
     let lastInflation: number | null = null;
     const data: ComparisonPoint[] = [];
@@ -740,17 +773,41 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
 
       const inflationIndex = baseInflation ? (lastInflation / baseInflation) * 100 : 100;
       const deflator = inflationIndex / 100;
-      const real = deflator ? point.value / deflator : point.value;
+      const real = deflator ? point.totalValue / deflator : point.totalValue;
       data.push({
         period: point.date,
-        nominal: point.value,
+        nominal: point.totalValue,
         real,
         inflationIndex,
+        netContribution: point.netContribution,
       });
     }
 
     return data;
   }, [portfolioSeries, resolvedInflationIndex]);
+
+  const lossData = useMemo(() => {
+    if (chartData.length === 0) {
+      return [];
+    }
+
+    const baseNominal = chartData[0].nominal;
+    const baseInflation = chartData[0].inflationIndex;
+    return chartData.map((point) => {
+      const capital = point.netContribution || baseNominal || 1;
+      const profitPercent =
+        capital !== 0
+          ? ((point.nominal - point.netContribution) / capital) * 100
+          : 0;
+      const inflationPercent = baseInflation
+        ? ((point.inflationIndex - baseInflation) / baseInflation) * 100
+        : 0;
+      return {
+        period: point.period,
+        outperformance: profitPercent - inflationPercent,
+      };
+    });
+  }, [chartData]);
 
   const stats = useMemo(() => {
     if (chartData.length < 2) {
@@ -844,8 +901,6 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
                     <Select
                       value={source}
                       onValueChange={(value) => setSource(value as InflationSource)}
-                      open={settingsOpen}
-                      onOpenChange={setSettingsOpen}
                     >
                       <SelectTrigger id="source-select-settings">
                         <SelectValue placeholder="Select source" />
@@ -1016,16 +1071,15 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
               <Separator />
 
               <div className="space-y-2">
-                <Label>Chart style</Label>
+                <Label>Plot type</Label>
                 <ToggleGroup
                   type="single"
-                  value={chartType}
-                  onValueChange={(value) => value && setChartType(value as ChartType)}
+                  value={plotType}
+                  onValueChange={(value) => value && setPlotType(value as PlotType)}
                   className="flex flex-wrap"
                 >
-                  <ToggleGroupItem value="line">Line</ToggleGroupItem>
-                  <ToggleGroupItem value="area">Area</ToggleGroupItem>
-                  <ToggleGroupItem value="bar">Bar</ToggleGroupItem>
+                  <ToggleGroupItem value="comparison">Comparison</ToggleGroupItem>
+                  <ToggleGroupItem value="loss">Excess</ToggleGroupItem>
                 </ToggleGroup>
               </div>
 
@@ -1122,7 +1176,9 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
             <CardHeader>
               <CardTitle>Inflation comparison</CardTitle>
               <CardDescription>
-                Nominal and inflation-adjusted values with the selected inflation index.
+                {plotType === 'comparison'
+                  ? 'Nominal and inflation-adjusted values rebased to the start of the range.'
+                  : 'Excess return (above zero beats inflation, net of contributions).'}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -1136,23 +1192,39 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
                 />
               ) : (
                 <ChartContainer config={CHART_CONFIG} className="h-[360px]">
-                  <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0 }}>
+                  <ComposedChart
+                    data={plotType === 'comparison' ? chartData : lossData}
+                    margin={{ top: 10, right: 20, left: 0 }}
+                  >
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="period" tickFormatter={formatPeriodLabel} minTickGap={24} />
-                    <YAxis
-                      yAxisId="value"
-                      tickFormatter={(value) => currencyFormatter.format(Number(value))}
-                      width={80}
-                    />
+                    {plotType === 'comparison' ? (
+                      <YAxis
+                        yAxisId="value"
+                        tickFormatter={(value) => currencyFormatter.format(Number(value))}
+                        width={80}
+                      />
+                    ) : (
+                      <YAxis
+                        yAxisId="loss"
+                        tickFormatter={(value) =>
+                          percentFormatter.format(Number(value) / 100)
+                        }
+                        width={72}
+                      />
+                    )}
                     <ChartTooltip
                       content={
                         <ChartTooltipContent
                           formatter={(value, name) => {
                             const numeric = Number(value);
-                            return [
-                              currencyFormatter.format(numeric),
-                              name === 'real' ? 'Inflation-adjusted value' : 'Nominal value',
-                            ];
+                            if (plotType === 'comparison') {
+                              return [
+                                currencyFormatter.format(numeric),
+                                name === 'real' ? 'Inflation-adjusted value' : 'Nominal value',
+                              ];
+                            }
+                            return [percentFormatter.format(numeric / 100), 'Excess return'];
                           }}
                           labelFormatter={(label) =>
                             `Period: ${formatPeriodLabel(String(label))}`
@@ -1162,26 +1234,7 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
                     />
                     <ChartLegend content={<ChartLegendContent />} />
 
-                    {chartType === 'line' && (
-                      <>
-                        <Line
-                          yAxisId="value"
-                          dataKey="nominal"
-                          stroke="var(--color-nominal)"
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                        <Line
-                          yAxisId="value"
-                          dataKey="real"
-                          stroke="var(--color-real)"
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                      </>
-                    )}
-
-                    {chartType === 'area' && (
+                    {plotType === 'comparison' ? (
                       <>
                         <Area
                           yAxisId="value"
@@ -1198,23 +1251,14 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
                           fillOpacity={0.2}
                         />
                       </>
-                    )}
-
-                    {chartType === 'bar' && (
-                      <>
-                        <Bar
-                          yAxisId="value"
-                          dataKey="nominal"
-                          fill="var(--color-nominal)"
-                          radius={[4, 4, 0, 0]}
-                        />
-                        <Bar
-                          yAxisId="value"
-                          dataKey="real"
-                          fill="var(--color-real)"
-                          radius={[4, 4, 0, 0]}
-                        />
-                      </>
+                    ) : (
+                      <Line
+                        yAxisId="loss"
+                        dataKey="outperformance"
+                        stroke="var(--color-outperformance)"
+                        strokeWidth={2}
+                        dot={false}
+                      />
                     )}
                   </ComposedChart>
                 </ChartContainer>
