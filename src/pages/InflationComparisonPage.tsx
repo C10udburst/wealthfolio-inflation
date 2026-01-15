@@ -31,24 +31,21 @@ import {
   ToggleGroupItem,
 } from '@wealthfolio/ui';
 import { AmountDisplay } from '@wealthfolio/ui';
-import {
-  Area,
-  CartesianGrid,
-  ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
-  ChartTooltip,
-  ChartTooltipContent,
-  ComposedChart,
-  Line,
-  XAxis,
-  YAxis,
-} from '@wealthfolio/ui/chart';
 import { Icons } from '@wealthfolio/ui';
 import {
+  buildInterestSeries,
+  buildLossSeries,
+  ComparisonChart,
+  ExcessChart,
+  InterestChart,
+  type ComparisonPoint,
+} from '../components/inflation';
+import {
   buildInflationIndex,
+  fetchDbnomicsSeries,
   fetchImfSeries,
   fetchWorldBankSeries,
+  DBNOMICS_METRICS,
   IMF_METRICS,
   WORLD_BANK_METRICS,
   toPeriodKey,
@@ -60,7 +57,7 @@ import {
   type InflationValueType,
 } from '../lib/inflation';
 
-type PlotType = 'comparison' | 'loss';
+type PlotType = 'comparison' | 'loss' | 'interest';
 type RangeOption = '1Y' | '3Y' | '5Y' | '10Y' | 'ALL';
 
 const RANGE_OPTIONS: { value: RangeOption; label: string }[] = [
@@ -91,32 +88,30 @@ const COUNTRY_OPTIONS = [
   { value: 'ZA', label: 'South Africa' },
 ];
 
-const CHART_CONFIG = {
-  nominal: {
-    label: 'Nominal value',
-    color: '#2563eb',
-  },
-  real: {
-    label: 'Inflation-adjusted value',
-    color: '#16a34a',
-  },
-  outperformance: {
-    label: 'Excess return',
-    color: '#f97316',
-  },
+const IMF_COUNTRY_MAP: Record<string, string> = {
+  US: 'USA',
+  UK: 'GBR',
+  CA: 'CAN',
+  GB: 'GBR',
+  DE: 'DEU',
+  FR: 'FRA',
+  PL: 'POL',
+  JP: 'JPN',
+  AU: 'AUS',
+  NZ: 'NZL',
+  CH: 'CHE',
+  SE: 'SWE',
+  NO: 'NOR',
+  BR: 'BRA',
+  IN: 'IND',
+  CN: 'CHN',
+  MX: 'MEX',
+  ZA: 'ZAF',
 };
 
 type SeriesPoint = {
   date: string;
   totalValue: number;
-  netContribution: number;
-};
-
-type ComparisonPoint = {
-  period: string;
-  nominal: number;
-  real: number;
-  inflationIndex: number;
   netContribution: number;
 };
 
@@ -132,6 +127,14 @@ const toMonthKey = (value: string) => {
 
   const month = String(parsed.getUTCMonth() + 1).padStart(2, '0');
   return `${parsed.getUTCFullYear()}-${month}`;
+};
+
+const resolveImfCountryCode = (value: string) => {
+  const trimmed = value.trim().toUpperCase();
+  if (trimmed.length === 3) {
+    return trimmed;
+  }
+  return IMF_COUNTRY_MAP[trimmed] ?? trimmed;
 };
 
 const parseIsoDate = (value: string) => {
@@ -304,31 +307,6 @@ const normalizeInflationSeries = (
   return Array.from(byPeriod.values()).sort((a, b) => a.date.localeCompare(b.date));
 };
 
-const formatPeriodLabel = (value: string) => {
-  if (value.length === 10) {
-    const parsed = new Date(`${value}T00:00:00Z`);
-    if (!Number.isNaN(parsed.getTime())) {
-      return new Intl.DateTimeFormat(undefined, {
-        month: 'short',
-        day: 'numeric',
-        year: '2-digit',
-      }).format(parsed);
-    }
-  }
-
-  if (value.length === 7) {
-    const parsed = new Date(`${value}-01T00:00:00Z`);
-    if (!Number.isNaN(parsed.getTime())) {
-      return new Intl.DateTimeFormat(undefined, {
-        month: 'short',
-        year: '2-digit',
-      }).format(parsed);
-    }
-  }
-
-  return value;
-};
-
 const expandInflationIndexToDaily = (series: InflationPoint[]): InflationPoint[] => {
   if (series.length === 0) {
     return [];
@@ -390,7 +368,8 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
   const [plotType, setPlotType] = useState<PlotType>('comparison');
   const [resolution, setResolution] = useState<'monthly' | 'daily'>('monthly');
   const [range, setRange] = useState<RangeOption>('5Y');
-  const [imfFrequency, setImfFrequency] = useState<InflationFrequency>('M');
+  const [dbnomicsFrequency, setDbnomicsFrequency] =
+    useState<InflationFrequency>('M');
   const [proxyBase, setProxyBase] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -414,7 +393,11 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
     }
 
     const storedSource = window.localStorage.getItem('wealthfolio-inflation-source');
-    if (storedSource === 'worldBank' || storedSource === 'imf') {
+    if (
+      storedSource === 'worldBank' ||
+      storedSource === 'dbnomics' ||
+      storedSource === 'imf'
+    ) {
       setSource(storedSource);
     }
 
@@ -552,13 +535,21 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
   }, [ctx]);
 
   useEffect(() => {
-    const metrics = source === 'worldBank' ? WORLD_BANK_METRICS : IMF_METRICS;
+    const metrics =
+      source === 'worldBank'
+        ? WORLD_BANK_METRICS
+        : source === 'dbnomics'
+          ? DBNOMICS_METRICS
+          : IMF_METRICS;
     const hasMetric = metrics.some((metric) => metric.id === metricId);
+    const shouldUpdateDbnomicsFrequency = source === 'dbnomics';
 
     if (!hasMetric && metricId !== 'custom') {
       if (metrics[0]) {
         setMetricId(metrics[0].id);
-        setImfFrequency(metrics[0].frequency ?? 'M');
+        if (shouldUpdateDbnomicsFrequency) {
+          setDbnomicsFrequency(metrics[0].frequency ?? 'M');
+        }
       } else {
         setMetricId('custom');
       }
@@ -567,16 +558,21 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
 
     if (metricId !== 'custom') {
       const selected = metrics.find((metric) => metric.id === metricId);
-      if (selected?.frequency) {
-        setImfFrequency(selected.frequency);
+      if (selected?.frequency && shouldUpdateDbnomicsFrequency) {
+        setDbnomicsFrequency(selected.frequency);
       }
     }
   }, [source, metricId]);
 
-  const metrics = useMemo(
-    () => (source === 'worldBank' ? WORLD_BANK_METRICS : IMF_METRICS),
-    [source],
-  );
+  const metrics = useMemo(() => {
+    if (source === 'worldBank') {
+      return WORLD_BANK_METRICS;
+    }
+    if (source === 'dbnomics') {
+      return DBNOMICS_METRICS;
+    }
+    return IMF_METRICS;
+  }, [source]);
 
   const selectedCountry =
     countryChoice === 'custom' ? customCountry.trim() : countryChoice;
@@ -593,12 +589,18 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
         label: 'Custom indicator',
         type: customMetricType,
         source,
-        frequency: source === 'imf' ? imfFrequency : 'A',
       };
     }
 
     return metrics.find((metric) => metric.id === metricId) ?? metrics[0] ?? null;
-  }, [metricId, customMetricId, customMetricType, metrics, source, imfFrequency]);
+  }, [metricId, customMetricId, customMetricType, metrics, source]);
+
+  const resolvedDbnomicsFrequency =
+    source === 'dbnomics' && selectedMetric?.frequency
+      ? selectedMetric.frequency
+      : dbnomicsFrequency;
+  const showDbnomicsFrequency =
+    source === 'dbnomics' && !selectedMetric?.frequency;
 
   const rangeSpec = useMemo(() => {
     if (range === 'ALL') {
@@ -624,7 +626,13 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
   }, [range]);
 
   const inflationGranularity: InflationGranularity =
-    source === 'imf' && imfFrequency === 'M' ? 'month' : 'year';
+    source === 'dbnomics'
+      ? resolvedDbnomicsFrequency === 'M'
+        ? 'month'
+        : 'year'
+      : source === 'imf' && selectedMetric?.frequency === 'M'
+        ? 'month'
+        : 'year';
 
   useEffect(() => {
     if (!selectedCountry || !selectedMetric) {
@@ -645,7 +653,11 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
 
     const requestedAccountId = accountId === 'all' ? 'TOTAL' : accountId;
     const countryCode =
-      source === 'worldBank' ? selectedCountry.toLowerCase() : selectedCountry.toUpperCase();
+      source === 'worldBank'
+        ? selectedCountry.toLowerCase()
+        : source === 'dbnomics'
+          ? selectedCountry.toUpperCase()
+          : resolveImfCountryCode(selectedCountry);
 
     const fetchData = async () => {
       const valuationPromise = ctx.api.portfolio.getHistoricalValuations(
@@ -664,15 +676,24 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
               proxyBase,
               signal: controller.signal,
             })
-          : fetchImfSeries({
-              country: countryCode,
-              indicator: selectedMetric.id,
-              frequency: imfFrequency,
-              startYear: rangeSpec.startYear,
-              endYear: rangeSpec.endYear,
-              proxyBase,
-              signal: controller.signal,
-            });
+          : source === 'dbnomics'
+            ? fetchDbnomicsSeries({
+                country: countryCode,
+                indicator: selectedMetric.id,
+                frequency: resolvedDbnomicsFrequency,
+                startYear: rangeSpec.startYear,
+                endYear: rangeSpec.endYear,
+                proxyBase,
+                signal: controller.signal,
+              })
+            : fetchImfSeries({
+                country: countryCode,
+                indicator: selectedMetric.id,
+                startYear: rangeSpec.startYear,
+                endYear: rangeSpec.endYear,
+                proxyBase,
+                signal: controller.signal,
+              });
 
       const [valuations, inflation] = await Promise.all([
         valuationPromise,
@@ -713,7 +734,7 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
     accountId,
     ctx,
     inflationGranularity,
-    imfFrequency,
+    resolvedDbnomicsFrequency,
     rangeSpec,
     resolution,
     selectedCountry,
@@ -786,28 +807,8 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
     return data;
   }, [portfolioSeries, resolvedInflationIndex]);
 
-  const lossData = useMemo(() => {
-    if (chartData.length === 0) {
-      return [];
-    }
-
-    const baseNominal = chartData[0].nominal;
-    const baseInflation = chartData[0].inflationIndex;
-    return chartData.map((point) => {
-      const capital = point.netContribution || baseNominal || 1;
-      const profitPercent =
-        capital !== 0
-          ? ((point.nominal - point.netContribution) / capital) * 100
-          : 0;
-      const inflationPercent = baseInflation
-        ? ((point.inflationIndex - baseInflation) / baseInflation) * 100
-        : 0;
-      return {
-        period: point.period,
-        outperformance: profitPercent - inflationPercent,
-      };
-    });
-  }, [chartData]);
+  const lossData = useMemo(() => buildLossSeries(chartData), [chartData]);
+  const interestData = useMemo(() => buildInterestSeries(chartData), [chartData]);
 
   const stats = useMemo(() => {
     if (chartData.length < 2) {
@@ -907,7 +908,8 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="worldBank">World Bank Indicators</SelectItem>
-                        <SelectItem value="imf">IMF Data Portal (IFS)</SelectItem>
+                        <SelectItem value="dbnomics">DBnomics (IMF IFS)</SelectItem>
+                        <SelectItem value="imf">IMF Data Mapper (WEO)</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1021,12 +1023,12 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
                 )}
               </div>
 
-              {source === 'imf' && (
+              {showDbnomicsFrequency && (
                 <div className="space-y-2">
                   <Label htmlFor="frequency-select">Frequency</Label>
                   <Select
-                    value={imfFrequency}
-                    onValueChange={(value) => setImfFrequency(value as InflationFrequency)}
+                    value={dbnomicsFrequency}
+                    onValueChange={(value) => setDbnomicsFrequency(value as InflationFrequency)}
                   >
                     <SelectTrigger id="frequency-select">
                       <SelectValue placeholder="Select frequency" />
@@ -1080,6 +1082,9 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
                 >
                   <ToggleGroupItem value="comparison">Comparison</ToggleGroupItem>
                   <ToggleGroupItem value="loss">Excess</ToggleGroupItem>
+                  <ToggleGroupItem value="interest">
+                    Interest vs inflation
+                  </ToggleGroupItem>
                 </ToggleGroup>
               </div>
 
@@ -1090,7 +1095,11 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
                     : `Account currency: ${displayCurrency}`}
                 </Badge>
                 <Badge variant="outline">
-                  {source === 'worldBank' ? 'World Bank' : 'IMF Data Portal'}
+                  {source === 'worldBank'
+                    ? 'World Bank'
+                    : source === 'dbnomics'
+                      ? 'DBnomics'
+                      : 'IMF Data Mapper'}
                 </Badge>
               </div>
             </CardContent>
@@ -1178,7 +1187,9 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
               <CardDescription>
                 {plotType === 'comparison'
                   ? 'Nominal and inflation-adjusted values rebased to the start of the range.'
-                  : 'Excess return (above zero beats inflation, net of contributions).'}
+                  : plotType === 'loss'
+                    ? 'Excess return (above zero beats inflation, net of contributions).'
+                    : 'Inflation change versus portfolio interest on net contributions.'}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -1191,77 +1202,16 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
                   description="Adjust the date range or select a different metric."
                 />
               ) : (
-                <ChartContainer config={CHART_CONFIG} className="h-[360px]">
-                  <ComposedChart
-                    data={plotType === 'comparison' ? chartData : lossData}
-                    margin={{ top: 10, right: 20, left: 0 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="period" tickFormatter={formatPeriodLabel} minTickGap={24} />
-                    {plotType === 'comparison' ? (
-                      <YAxis
-                        yAxisId="value"
-                        tickFormatter={(value) => currencyFormatter.format(Number(value))}
-                        width={80}
-                      />
-                    ) : (
-                      <YAxis
-                        yAxisId="loss"
-                        tickFormatter={(value) =>
-                          percentFormatter.format(Number(value) / 100)
-                        }
-                        width={72}
-                      />
-                    )}
-                    <ChartTooltip
-                      content={
-                        <ChartTooltipContent
-                          formatter={(value, name) => {
-                            const numeric = Number(value);
-                            if (plotType === 'comparison') {
-                              return [
-                                currencyFormatter.format(numeric),
-                                name === 'real' ? 'Inflation-adjusted value' : 'Nominal value',
-                              ];
-                            }
-                            return [percentFormatter.format(numeric / 100), 'Excess return'];
-                          }}
-                          labelFormatter={(label) =>
-                            `Period: ${formatPeriodLabel(String(label))}`
-                          }
-                        />
-                      }
-                    />
-                    <ChartLegend content={<ChartLegendContent />} />
-
-                    {plotType === 'comparison' ? (
-                      <>
-                        <Area
-                          yAxisId="value"
-                          dataKey="nominal"
-                          stroke="var(--color-nominal)"
-                          fill="var(--color-nominal)"
-                          fillOpacity={0.15}
-                        />
-                        <Area
-                          yAxisId="value"
-                          dataKey="real"
-                          stroke="var(--color-real)"
-                          fill="var(--color-real)"
-                          fillOpacity={0.2}
-                        />
-                      </>
-                    ) : (
-                      <Line
-                        yAxisId="loss"
-                        dataKey="outperformance"
-                        stroke="var(--color-outperformance)"
-                        strokeWidth={2}
-                        dot={false}
-                      />
-                    )}
-                  </ComposedChart>
-                </ChartContainer>
+                plotType === 'comparison' ? (
+                  <ComparisonChart
+                    data={chartData}
+                    currencyFormatter={currencyFormatter}
+                  />
+                ) : plotType === 'loss' ? (
+                  <ExcessChart data={lossData} percentFormatter={percentFormatter} />
+                ) : (
+                  <InterestChart data={interestData} percentFormatter={percentFormatter} />
+                )
               )}
             </CardContent>
           </Card>
@@ -1270,3 +1220,4 @@ export default function InflationComparisonPage({ ctx }: { ctx: AddonContext }) 
     </Page>
   );
 }
+
